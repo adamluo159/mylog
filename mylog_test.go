@@ -3,6 +3,7 @@ package mylog
 import (
 	"fmt"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 )
@@ -20,10 +21,11 @@ func TestLogging(t *testing.T) {
 	l, err := New("./log/logging.log", LogDebug, time.Minute, GB)
 	if err != nil {
 		fmt.Println(err)
+		return
 	}
 	logstring := "testlogging"
 	l.Debug(logstring)
-	t1 := time.NewTimer(time.Minute * 4)
+	t1 := time.NewTimer(time.Minute * 2)
 	t2 := time.NewTicker(time.Millisecond)
 	count := 0
 	for {
@@ -39,4 +41,35 @@ func TestLogging(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestGo(t *testing.T) {
+	l, err := New("./log/goroute.log", LogDebug, time.Hour, GB)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	var wglocker sync.WaitGroup
+	wglocker.Add(2)
+	go func() {
+		count := 0
+		logstring := "testgoroute1-"
+		for {
+			l.Debug(logstring + strconv.Itoa(count))
+			count++
+			time.Sleep(time.Millisecond * 1)
+		}
+		wglocker.Done()
+	}()
+	go func() {
+		count := 0
+		logstring := "testgoroute2-"
+		for {
+			l.Debug(logstring + strconv.Itoa(count))
+			count++
+			time.Sleep(time.Millisecond * 1)
+		}
+		wglocker.Done()
+	}()
+	wglocker.Wait()
 }
