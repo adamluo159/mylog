@@ -2,21 +2,22 @@ package mylog
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
-	"strings"
+	"runtime"
 	"sync"
 	"time"
 )
 
+type LogLevel int
+
 // levels
 const (
-	debugLevel = 0
-	infoLevel  = 1
-	errorLevel = 2
-	warnLevel  = 3
-	fatalLevel = 4
+	LogDebug LogLevel = iota
+	LogInfo
+	LogWarn
+	LogError
+	LogFatal
 )
 
 const (
@@ -27,197 +28,194 @@ const (
 	printFatalLevel = "[fatal  ] "
 )
 
-var (
-	myLogs       []*MyLogger
-	logsrwlocker sync.RWMutex
+type ByteSize int64
+
+const (
+	_           = iota
+	KB ByteSize = 1 << (10 * iota)
+	MB
+	GB
+	TB
+	PB
 )
 
-type MyLogger struct {
-	level        int
-	baseMyLogger *log.Logger
-	baseFile     *os.File
-	pathString   string
-	printConsole bool
+type MyLog struct {
+	level        LogLevel
+	logfile      *os.File
+	console      bool
 	count        int8
-	filesize     uint64
+	pathfile     string
 	locker       sync.Mutex
-	flag         int
+	fsize        ByteSize
+	fmaxsize     ByteSize
+	interval     time.Duration
+	intervaltime time.Time
 }
 
-func loopTime() {
-	h := 25 * time.Hour
-	now := time.Now()
-	t1 := now.Truncate(time.Hour)
-	t2 := t1.Add(h)
-	t3 := t1.Add(time.Duration(24-t1.Hour()) * time.Hour)
-
-	var sleepDuration time.Duration
-	if t3.After(t2) {
-		sleepDuration = t2.Sub(now)
-	} else {
-		sleepDuration = t3.Sub(now)
-	}
-	time.Sleep(sleepDuration)
-	for {
-		for i := 0; i < len(myLogs); i++ {
-			myLogs[i].changeFile(true)
-		}
-		time.Sleep(h)
-	}
-}
-
-func New(strLevel string, pathFile string, flag int) (*MyLogger, error) {
-	if pathFile == "" {
+func New(pathfile string, level LogLevel, interval time.Duration, fsize ByteSize) (*MyLog, error) {
+	if pathfile == "" {
 		return nil, fmt.Errorf("path empty")
 	}
-
-	for i := 0; i < len(myLogs); i++ {
-		if myLogs[i].pathString == pathFile {
-			return nil, fmt.Errorf("file already open path:%s", pathFile)
-		}
-	}
-
-	// level
-	var level int
-	switch strings.ToLower(strLevel) {
-	case "debug":
-		level = debugLevel
-	case "info":
-		level = infoLevel
-	case "error":
-		level = errorLevel
-	case "warn":
-		level = warnLevel
-	case "fatal":
-		level = fatalLevel
-	default:
-		return nil, fmt.Errorf("unknown level: %s", strLevel)
-	}
-
-	err := os.MkdirAll(filepath.Dir(pathFile), os.ModePerm)
+	err := os.MkdirAll(filepath.Dir(pathfile), os.ModePerm)
 	if err != nil {
 		return nil, err
 	}
 
-	logger := &MyLogger{
-		level:      level,
-		pathString: pathFile,
+	l := &MyLog{
+		level:    level,
+		fmaxsize: fsize,
+		interval: interval,
+		pathfile: pathfile,
 	}
 
-	err = logger.newFile()
+	err = l.newFile()
 	if err != nil {
 		return nil, err
 	}
+	IntervalTime(l, interval)
+	return l, nil
+}
 
-	myLogs = append(myLogs, logger)
-
-	return logger, nil
+func IntervalTime(l *MyLog, i time.Duration) {
+	now := time.Now()
+	t1 := now.Truncate(time.Hour)
+	t2 := t1.Add(i)
+	t3 := t1.Add(time.Duration(24-t1.Hour()) * time.Hour)
+	var ftime time.Duration
+	if t3.After(t2) {
+		ftime = t2.Sub(now)
+	} else {
+		ftime = t3.Sub(now)
+	}
+	time.AfterFunc(ftime, func() {
+		l.locker.Lock()
+		l.changeFile(true)
+		l.locker.Unlock()
+	})
 }
 
 // It's dangerous to call the method on logging
-func (logger *MyLogger) Close() {
-	if logger.baseFile != nil {
-		logger.baseFile.Close()
-	}
+func (l *MyLog) Close() {
+	l.locker.Lock()
+	defer l.locker.Unlock()
 
-	logger.baseMyLogger = nil
-	logger.baseFile = nil
+	if l.logfile != nil {
+		l.logfile.Close()
+	}
+	l.logfile = nil
 }
 
-func (logger *MyLogger) doPrintf(level int, printLevel string, format string, a ...interface{}) {
-	if level < logger.level {
+func (l *MyLog) doPrintf(level LogLevel, printLevel string, format string, a ...interface{}) {
+	if level < l.level {
 		return
 	}
-	if logger.baseMyLogger == nil {
-		panic("logger closed")
+	_, file, line, ok := runtime.Caller(3)
+	if !ok {
+		file = "???"
+		line = 0
 	}
-	logstr := fmt.Sprintf(printLevel+format+"\n", a...)
-	logger.baseMyLogger.Output(3, format)
-	if logger.printConsole {
+	t := time.Now()
+	loghead := fmt.Sprintf("%s%s%s:%d", t.Format("2006-01-02 15:04:05.000 "), printLevel, file, line)
+	logstr := fmt.Sprintf(loghead+format+"\n", a...)
+	l.locker.Lock()
+	if l.logfile == nil {
+		return
+	}
+	n, _ := l.logfile.WriteString(logstr)
+	l.fsize += ByteSize(n)
+
+	if t.Before(l.intervaltime) {
+		l.changeFile(true)
+	} else if l.fsize >= l.fmaxsize {
+		l.changeFile(false)
+	}
+	if l.console {
 		fmt.Print(logstr)
 	}
-	if level == fatalLevel {
+	if level == LogFatal {
 		os.Exit(1)
 	}
+	l.locker.Unlock()
 }
 
-func (logger *MyLogger) newFile() error {
-	f, err := os.OpenFile(filepath.Base(logger.pathString), os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+func (l *MyLog) newFile() error {
+	f, err := os.OpenFile(l.pathfile, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
 	if err != nil {
 		return err
 	}
-	logger.baseFile = f
-	logger.filesize = 0
-	logger.baseMyLogger = log.New(f, "", logger.flag)
+	stat, errStat := f.Stat()
+	if errStat != nil {
+		return errStat
+	}
+
+	l.logfile = f
+	l.fsize = ByteSize(stat.Size())
 	return nil
 }
 
-func (logger *MyLogger) changeFile(next bool) {
-	logger.locker.Lock()
-	defer logger.locker.Unlock()
-
+func (l *MyLog) changeFile(next bool) {
+	l.logfile.Close()
 	now := time.Now()
 	filename := fmt.Sprintf("%s%d%02d%02d_%02d",
-		logger.pathString,
+		l.pathfile,
 		now.Year(),
 		now.Month(),
 		now.Day(),
 		now.Hour())
 	if next {
-		logger.count = 0
+		l.count = 0
+		l.intervaltime.Add(l.interval)
 	} else {
-		logger.count++
-		filename = fmt.Sprintf("%s.%d", filename, logger.count)
+		l.count++
+		filename = fmt.Sprintf("%s.%d", filename, l.count)
 	}
 
-	logger.baseFile.Close()
-	os.Rename(logger.pathString, filename)
-
-	logger.newFile()
+	os.Rename(l.pathfile, filename)
+	l.newFile()
 }
 
-func (logger *MyLogger) Debug(format string, a ...interface{}) {
-	logger.doPrintf(debugLevel, printDebugLevel, format, a...)
+func (l *MyLog) Debug(format string, a ...interface{}) {
+	l.doPrintf(LogDebug, printDebugLevel, format, a...)
 }
 
-func (logger *MyLogger) Info(format string, a ...interface{}) {
-	logger.doPrintf(infoLevel, printInfoLevel, format, a...)
+func (l *MyLog) Info(format string, a ...interface{}) {
+	l.doPrintf(LogInfo, printInfoLevel, format, a...)
 }
 
-func (logger *MyLogger) Error(format string, a ...interface{}) {
-	logger.doPrintf(errorLevel, printErrorLevel, format, a...)
+func (l *MyLog) Error(format string, a ...interface{}) {
+	l.doPrintf(LogError, printErrorLevel, format, a...)
 }
 
-func (logger *MyLogger) Fatal(format string, a ...interface{}) {
-	logger.doPrintf(fatalLevel, printFatalLevel, format, a...)
+func (l *MyLog) Fatal(format string, a ...interface{}) {
+	l.doPrintf(LogFatal, printFatalLevel, format, a...)
 }
 
-func (logger *MyLogger) Warn(format string, a ...interface{}) {
-	logger.doPrintf(warnLevel, printInfoLevel, format, a...)
+func (l *MyLog) Warn(format string, a ...interface{}) {
+	l.doPrintf(LogWarn, printInfoLevel, format, a...)
 }
 
-var gMyLogger, _ = New("debug", "", log.LstdFlags)
+var gMyLog, _ = New("", LogDebug, 10*time.Minute, GB)
 
 func Debug(format string, a ...interface{}) {
-	gMyLogger.doPrintf(debugLevel, printDebugLevel, format, a...)
+	gMyLog.doPrintf(LogDebug, printDebugLevel, format, a...)
 }
 
 func Info(format string, a ...interface{}) {
-	gMyLogger.doPrintf(infoLevel, printInfoLevel, format, a...)
+	gMyLog.doPrintf(LogInfo, printInfoLevel, format, a...)
 }
 
 func Warn(format string, a ...interface{}) {
-	gMyLogger.doPrintf(warnLevel, printInfoLevel, format, a...)
+	gMyLog.doPrintf(LogWarn, printInfoLevel, format, a...)
 }
 
 func Error(format string, a ...interface{}) {
-	gMyLogger.doPrintf(errorLevel, printErrorLevel, format, a...)
+	gMyLog.doPrintf(LogError, printErrorLevel, format, a...)
 }
 
 func Fatal(format string, a ...interface{}) {
-	gMyLogger.doPrintf(fatalLevel, printFatalLevel, format, a...)
+	gMyLog.doPrintf(LogFatal, printFatalLevel, format, a...)
 }
 
 func Close() {
-	gMyLogger.Close()
+	gMyLog.Close()
 }
