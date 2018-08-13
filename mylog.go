@@ -13,7 +13,8 @@ type LogLevel int
 
 // levels
 const (
-	LogDebug LogLevel = iota
+	_ LogLevel = iota
+	LogDebug
 	LogInfo
 	LogWarn
 	LogError
@@ -43,7 +44,7 @@ type MyLog struct {
 	level        LogLevel
 	logfile      *os.File
 	console      bool
-	count        int8
+	count        int
 	pathfile     string
 	locker       sync.Mutex
 	fsize        ByteSize
@@ -52,10 +53,17 @@ type MyLog struct {
 	intervaltime time.Time
 }
 
+var gMyLog *MyLog = nil
+
 func New(pathfile string, level LogLevel, interval time.Duration, fsize ByteSize) (*MyLog, error) {
 	if pathfile == "" {
 		return nil, fmt.Errorf("path empty")
 	}
+
+	if interval < time.Minute {
+		return nil, fmt.Errorf("at least one minute interval time")
+	}
+
 	err := os.MkdirAll(filepath.Dir(pathfile), os.ModePerm)
 	if err != nil {
 		return nil, err
@@ -72,29 +80,33 @@ func New(pathfile string, level LogLevel, interval time.Duration, fsize ByteSize
 	if err != nil {
 		return nil, err
 	}
-	IntervalTime(l, interval)
+
+	if gMyLog == nil {
+		gMyLog = l
+	}
+
+	intervalTime(l)
 	return l, nil
 }
 
-func IntervalTime(l *MyLog, i time.Duration) {
-	now := time.Now()
-	t1 := now.Truncate(time.Hour)
-	t2 := t1.Add(i)
+func intervalTime(l *MyLog) {
+	l.intervaltime = time.Now()
+	if l.interval < time.Hour {
+		l.intervaltime = l.intervaltime.Add(l.interval)
+		return
+	}
+	t1 := l.intervaltime.Truncate(time.Hour)
+	t2 := t1.Add(l.interval)
 	t3 := t1.Add(time.Duration(24-t1.Hour()) * time.Hour)
 	var ftime time.Duration
 	if t3.After(t2) {
-		ftime = t2.Sub(now)
+		ftime = t2.Sub(l.intervaltime)
 	} else {
-		ftime = t3.Sub(now)
+		ftime = t3.Sub(l.intervaltime)
 	}
-	time.AfterFunc(ftime, func() {
-		l.locker.Lock()
-		l.changeFile(true)
-		l.locker.Unlock()
-	})
+	l.intervaltime = l.intervaltime.Add(ftime)
 }
 
-// It's dangerous to call the method on logging
 func (l *MyLog) Close() {
 	l.locker.Lock()
 	defer l.locker.Unlock()
@@ -113,18 +125,24 @@ func (l *MyLog) doPrintf(level LogLevel, printLevel string, format string, a ...
 	if !ok {
 		file = "???"
 		line = 0
+	} else {
+		file = filepath.Base(file)
 	}
 	t := time.Now()
-	loghead := fmt.Sprintf("%s%s%s:%d", t.Format("2006-01-02 15:04:05.000 "), printLevel, file, line)
+	loghead := fmt.Sprintf("%s%s%s:%d  ", printLevel, t.Format("2006-01-02 15:04:05.000 "), file, line)
 	logstr := fmt.Sprintf(loghead+format+"\n", a...)
 	l.locker.Lock()
 	if l.logfile == nil {
+		l.locker.Unlock()
 		return
 	}
-	n, _ := l.logfile.WriteString(logstr)
+	n, err := l.logfile.WriteString(logstr)
 	l.fsize += ByteSize(n)
+	if err != nil {
+		fmt.Println(err)
+	}
 
-	if t.Before(l.intervaltime) {
+	if t.After(l.intervaltime) {
 		l.changeFile(true)
 	} else if l.fsize >= l.fmaxsize {
 		l.changeFile(false)
@@ -155,19 +173,33 @@ func (l *MyLog) newFile() error {
 
 func (l *MyLog) changeFile(next bool) {
 	l.logfile.Close()
-	now := time.Now()
-	filename := fmt.Sprintf("%s%d%02d%02d_%02d",
-		l.pathfile,
-		now.Year(),
-		now.Month(),
-		now.Day(),
-		now.Hour())
+	var filename string
 	if next {
+		if l.fsize == 0 {
+			return
+		}
+		filename = fmt.Sprintf("%s%d%02d%02d_%02d",
+			l.pathfile,
+			l.intervaltime.Year(),
+			l.intervaltime.Month(),
+			l.intervaltime.Day(),
+			l.intervaltime.Hour())
+		if l.interval < time.Hour {
+			filename = fmt.Sprintf("%s_%02d", filename, l.intervaltime.Minute())
+		}
 		l.count = 0
-		l.intervaltime.Add(l.interval)
+		l.intervaltime = l.intervaltime.Add(l.interval)
 	} else {
 		l.count++
-		filename = fmt.Sprintf("%s.%d", filename, l.count)
+		now := time.Now()
+		filename = fmt.Sprintf("%s%d%02d%02d_%02d_%02d.%d",
+			l.pathfile,
+			now.Year(),
+			now.Month(),
+			now.Day(),
+			now.Hour(),
+			now.Minute(),
+			l.count)
 	}
 
 	os.Rename(l.pathfile, filename)
@@ -191,29 +223,48 @@ func (l *MyLog) Fatal(format string, a ...interface{}) {
 }
 
 func (l *MyLog) Warn(format string, a ...interface{}) {
-	l.doPrintf(LogWarn, printInfoLevel, format, a...)
+	l.doPrintf(LogWarn, printWarnLevel, format, a...)
 }
 
-var gMyLog, _ = New("", LogDebug, 10*time.Minute, GB)
-
 func Debug(format string, a ...interface{}) {
+	if gMyLog == nil {
+		return
+	}
 	gMyLog.doPrintf(LogDebug, printDebugLevel, format, a...)
 }
 
 func Info(format string, a ...interface{}) {
+	if gMyLog == nil {
+		return
+	}
 	gMyLog.doPrintf(LogInfo, printInfoLevel, format, a...)
 }
 
 func Warn(format string, a ...interface{}) {
-	gMyLog.doPrintf(LogWarn, printInfoLevel, format, a...)
+	if gMyLog == nil {
+		return
+	}
+	gMyLog.doPrintf(LogWarn, printWarnLevel, format, a...)
 }
 
 func Error(format string, a ...interface{}) {
+	if gMyLog == nil {
+		return
+	}
 	gMyLog.doPrintf(LogError, printErrorLevel, format, a...)
 }
 
 func Fatal(format string, a ...interface{}) {
+	if gMyLog == nil {
+		return
+	}
 	gMyLog.doPrintf(LogFatal, printFatalLevel, format, a...)
+}
+
+func SetConsole(open bool) {
+	if gMyLog != nil {
+		gMyLog.console = open
+	}
 }
 
 func Close() {
