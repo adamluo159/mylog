@@ -44,7 +44,7 @@ func TestLogging(t *testing.T) {
 }
 
 func TestGo(t *testing.T) {
-	l, err := New("./log/goroute.log", LogDebug, time.Hour, GB)
+	l, err := New("./log/goroutine.log", LogDebug, time.Hour, GB)
 	if err != nil {
 		fmt.Println(err)
 		return
@@ -53,23 +53,45 @@ func TestGo(t *testing.T) {
 	wglocker.Add(2)
 	go func() {
 		count := 0
-		logstring := "testgoroute1-"
+		logstring := "testgoroutine1-"
 		for {
 			l.Debug(logstring + strconv.Itoa(count))
 			count++
 			time.Sleep(time.Millisecond * 1)
+			if count > 100000 {
+				break
+			}
 		}
 		wglocker.Done()
 	}()
 	go func() {
 		count := 0
-		logstring := "testgoroute2-"
+		logstring := "testgoroutine2-"
 		for {
 			l.Debug(logstring + strconv.Itoa(count))
 			count++
 			time.Sleep(time.Millisecond * 1)
+			if count > 100000 {
+				break
+			}
 		}
 		wglocker.Done()
 	}()
 	wglocker.Wait()
+}
+
+func BenchmarkLoops(b *testing.B) {
+	l, err := New("./log/bench_log.log", LogDebug, time.Hour, GB)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	var buf string
+	for i := 0; i < 256; i++ {
+		buf += "a"
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		l.Debug(buf)
+	}
 }
