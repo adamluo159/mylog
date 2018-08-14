@@ -14,7 +14,6 @@ func TestFunction(t *testing.T) {
 	Info("%s", "info")
 	Warn("%s", "warn")
 	Error("%s", "error")
-	Close()
 }
 
 func TestLogging(t *testing.T) {
@@ -31,7 +30,6 @@ func TestLogging(t *testing.T) {
 	for {
 		select {
 		case <-t1.C:
-			fmt.Println("close")
 			return
 		case <-t2.C:
 			count++
@@ -80,7 +78,7 @@ func TestGo(t *testing.T) {
 	wglocker.Wait()
 }
 
-func BenchmarkLoops(b *testing.B) {
+func BenchmarkLogging(b *testing.B) {
 	l, err := New("./log/bench_log.log", LogDebug, time.Hour, GB)
 	if err != nil {
 		fmt.Println(err)
