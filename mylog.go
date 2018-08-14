@@ -51,6 +51,23 @@ type MyLog struct {
 	fmaxsize     ByteSize
 	interval     time.Duration
 	intervaltime time.Time
+	buf          []byte
+}
+
+func itoa(buf *[]byte, i int, wid int) {
+	// Assemble decimal in reverse order.
+	var b [20]byte
+	bp := len(b) - 1
+	for i >= 10 || wid > 1 {
+		wid--
+		q := i / 10
+		b[bp] = byte('0' + i - q*10)
+		bp--
+		i = q
+	}
+	// i < 10
+	b[bp] = byte('0' + i)
+	*buf = append(*buf, b[bp:]...)
 }
 
 var gMyLog *MyLog = nil
@@ -117,10 +134,35 @@ func (l *MyLog) Close() {
 	l.logfile = nil
 }
 
+func (l *MyLog) formatHeader(buf *[]byte, t time.Time, file string, line int) {
+	year, month, day := t.Date()
+	itoa(buf, year, 4)
+	*buf = append(*buf, '/')
+	itoa(buf, int(month), 2)
+	*buf = append(*buf, '/')
+	itoa(buf, day, 2)
+	*buf = append(*buf, ' ')
+	hour, min, sec := t.Clock()
+	itoa(buf, hour, 2)
+	*buf = append(*buf, ':')
+	itoa(buf, min, 2)
+	*buf = append(*buf, ':')
+	itoa(buf, sec, 2)
+	*buf = append(*buf, '.')
+	itoa(buf, t.Nanosecond()/1e3, 6)
+	*buf = append(*buf, ' ')
+
+	*buf = append(*buf, filepath.Base(file)...)
+	*buf = append(*buf, ':')
+	itoa(buf, line, -1)
+	*buf = append(*buf, ": "...)
+}
 func (l *MyLog) doPrintf(level LogLevel, printLevel string, format string, a ...interface{}) {
 	if level < l.level {
 		return
 	}
+	s := printLevel + format
+	now := time.Now()
 	_, file, line, ok := runtime.Caller(3)
 	if !ok {
 		file = "???"
@@ -128,28 +170,34 @@ func (l *MyLog) doPrintf(level LogLevel, printLevel string, format string, a ...
 	} else {
 		file = filepath.Base(file)
 	}
-	t := time.Now()
-	loghead := fmt.Sprintf("%s%s%s:%d  ", printLevel, t.Format("2006-01-02 15:04:05.000 "), file, line)
-	logstr := fmt.Sprintf(loghead+format+"\n", a...)
+
 	l.locker.Lock()
+	l.buf = l.buf[:0]
+	l.formatHeader(&l.buf, now, file, line)
+	l.buf = append(l.buf, s...)
+	if len(s) == 0 || s[len(s)-1] != '\n' {
+		l.buf = append(l.buf, '\n')
+	}
+
 	if l.logfile == nil {
 		l.locker.Unlock()
 		return
 	}
-	n, err := l.logfile.WriteString(logstr)
+
+	n, err := l.logfile.Write(l.buf)
 	l.fsize += ByteSize(n)
 	if err != nil {
 		fmt.Println(err)
 	}
 
-	if t.After(l.intervaltime) {
+	if now.After(l.intervaltime) {
 		l.changeFile(true)
 	} else if l.fsize >= l.fmaxsize {
 		l.changeFile(false)
 	}
-	if l.console {
-		fmt.Print(logstr)
-	}
+	//	if l.console {
+	//		fmt.Print(l.buf)
+	//	}
 	if level == LogFatal {
 		os.Exit(1)
 	}

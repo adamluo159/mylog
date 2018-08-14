@@ -87,7 +87,7 @@ func BenchmarkLoops(b *testing.B) {
 		return
 	}
 	var buf string
-	for i := 0; i < 256; i++ {
+	for i := 0; i < 1024; i++ {
 		buf += "a"
 	}
 	b.ResetTimer()
