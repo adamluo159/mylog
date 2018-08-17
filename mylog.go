@@ -78,7 +78,7 @@ func New(pathfile string, level LogLevel, interval time.Duration, fsize ByteSize
 	}
 
 	if interval < time.Minute {
-		return nil, fmt.Errorf("at least one minute interval time")
+		interval = -1
 	}
 
 	err := os.MkdirAll(filepath.Dir(pathfile), os.ModePerm)
@@ -107,6 +107,10 @@ func New(pathfile string, level LogLevel, interval time.Duration, fsize ByteSize
 }
 
 func intervalTime(l *MyLog) {
+	if l.interval < 0 {
+		return
+	}
+
 	l.intervaltime = time.Now()
 	if l.interval < time.Hour {
 		l.intervaltime = l.intervaltime.Add(l.interval)
@@ -161,9 +165,10 @@ func (l *MyLog) doPrintf(level LogLevel, printLevel string, format string, a ...
 	if level < l.level {
 		return
 	}
-	s := printLevel + format
+	s := fmt.Sprintf(printLevel+format, a...)
+
 	now := time.Now()
-	_, file, line, ok := runtime.Caller(3)
+	_, file, line, ok := runtime.Caller(2)
 	if !ok {
 		file = "???"
 		line = 0
@@ -190,14 +195,15 @@ func (l *MyLog) doPrintf(level LogLevel, printLevel string, format string, a ...
 		fmt.Println(err)
 	}
 
-	if now.After(l.intervaltime) {
+	if l.interval > time.Minute && now.After(l.intervaltime) {
 		l.changeFile(true)
 	} else if l.fsize >= l.fmaxsize {
 		l.changeFile(false)
 	}
-	//	if l.console {
-	//		fmt.Print(l.buf)
-	//	}
+
+	if l.console {
+		fmt.Print(string(l.buf))
+	}
 	if level == LogFatal {
 		os.Exit(1)
 	}
@@ -252,6 +258,45 @@ func (l *MyLog) changeFile(next bool) {
 
 	os.Rename(l.pathfile, filename)
 	l.newFile()
+}
+
+func (l *MyLog) Output(depth int, format string, a ...interface{}) {
+	_, file, line, ok := runtime.Caller(depth)
+	if !ok {
+		file = "???"
+		line = 0
+	} else {
+		file = filepath.Base(file)
+	}
+
+	now := time.Now()
+	l.locker.Lock()
+	l.buf = l.buf[:0]
+	l.formatHeader(&l.buf, now, file, line)
+	l.buf = append(l.buf, format...)
+	if len(format) == 0 || format[len(format)-1] != '\n' {
+		l.buf = append(l.buf, '\n')
+	}
+
+	if l.logfile == nil {
+		l.locker.Unlock()
+		return
+	}
+
+	n, err := l.logfile.Write(l.buf)
+	l.fsize += ByteSize(n)
+	if err != nil {
+		fmt.Println(err)
+	}
+
+	if l.interval > time.Minute && now.After(l.intervaltime) {
+		l.changeFile(true)
+	} else if l.fsize >= l.fmaxsize {
+		l.changeFile(false)
+	}
+
+	l.locker.Unlock()
+
 }
 
 func (l *MyLog) Debug(format string, a ...interface{}) {

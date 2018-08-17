@@ -88,8 +88,9 @@ func BenchmarkLogging(b *testing.B) {
 	for i := 0; i < 1024; i++ {
 		buf += "a"
 	}
+	buf += "%d"
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		l.Debug(buf)
+		l.Debug(buf, 100)
 	}
 }
