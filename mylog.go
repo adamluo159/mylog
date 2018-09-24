@@ -138,7 +138,7 @@ func (l *MyLog) Close() {
 	l.logfile = nil
 }
 
-func (l *MyLog) formatHeader(buf *[]byte, t time.Time, file string, line int) {
+func (l *MyLog) formatHeader(buf *[]byte, t *time.Time, file string, line int) {
 	year, month, day := t.Date()
 	itoa(buf, year, 4)
 	*buf = append(*buf, '/')
@@ -178,7 +178,7 @@ func (l *MyLog) doPrintf(level LogLevel, printLevel string, format string, a ...
 
 	l.locker.Lock()
 	l.buf = l.buf[:0]
-	l.formatHeader(&l.buf, now, file, line)
+	l.formatHeader(&l.buf, &now, file, line)
 	l.buf = append(l.buf, s...)
 	if len(s) == 0 || s[len(s)-1] != '\n' {
 		l.buf = append(l.buf, '\n')
@@ -272,7 +272,7 @@ func (l *MyLog) Output(depth int, format string, a ...interface{}) {
 	now := time.Now()
 	l.locker.Lock()
 	l.buf = l.buf[:0]
-	l.formatHeader(&l.buf, now, file, line)
+	l.formatHeader(&l.buf, &now, file, line)
 	l.buf = append(l.buf, format...)
 	if len(format) == 0 || format[len(format)-1] != '\n' {
 		l.buf = append(l.buf, '\n')
